@@ -10,14 +10,14 @@ from defconQt.objects.sizeGripItem import ResizeHandleItem, SizeGripItem
 from defconQt.pens.copySelectionPen import CopySelectionPen
 from defconQt.util import platformSpecific
 from fontTools.misc import bezierTools
-from PyQt5.QtCore import QEvent, QLineF, QMimeData, QPointF, Qt
+from PyQt5.QtCore import QEvent, QLineF, QRectF, QMimeData, QPointF, Qt
 from PyQt5.QtGui import (
     QBrush, QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QPixmap, QTransform)
 from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QColorDialog, QComboBox, QDialog,
     QDialogButtonBox, QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem,
-    QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene,
+    QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsRectItem,
     QGraphicsSimpleTextItem, QGraphicsView, QGridLayout, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMenu, QRadioButton, QSizePolicy, QStyle,
     QStyleOptionGraphicsItem, QToolBar, QWidget)
@@ -1229,6 +1229,32 @@ class PixmapItem(QGraphicsPixmapItem):
             sizeGripItem.setVisible(value)
         return value
 
+class SelectionResizerItem(QGraphicsRectItem):
+    def __init__(self, scene, parent=None):
+        super(SelectionResizerItem, self).__init__(parent)
+        self.scene = scene
+        self.setPen(QPen(Qt.black))
+
+    def setRect(self, new_rect):
+        self.old = self.rect()
+        super(SelectionResizerItem, self).setRect(new_rect)
+
+        if new_rect.width() == 0 or new_rect.height() == 0:
+            return
+
+        if self.old.width() == 0 or self.old.height() == 0:
+            return
+
+        if self.old == new_rect:
+            return
+
+        print("SelectionResizerItem::setRect(new_rect=", new_rect, ")")
+        return
+
+        for item in self.scene.selectedItems():
+            if isinstance(item, OnCurvePointItem):
+                item.setX( new_rect.x() + (item.x() - self.old.x()) * new_rect.width() / self.old.width() )
+                item.setY( new_rect.y() + (item.y() - self.old.y()) * new_rect.height() / self.old.height() )
 
 class GlyphScene(QGraphicsScene):
 
@@ -1254,6 +1280,10 @@ class GlyphScene(QGraphicsScene):
         self.setFont(font)
 
         self._blocked = False
+
+        self.grip = None
+        self._selection_rect = SelectionResizerItem(self)
+        self.addItem(self._selection_rect)
 
     def _get_glyphObject(self):
         view = self.views()[0]
@@ -1415,6 +1445,7 @@ class GlyphScene(QGraphicsScene):
                     item.parentItem().isSelected()):
                 continue
             item.moveBy(x, y)
+        #self.update_selection_rect()
         event.accept()
 
     def keyReleaseEvent(self, event):
@@ -1534,6 +1565,7 @@ class GlyphScene(QGraphicsScene):
             item.setSelected(True)
 
     def mouseMoveEvent(self, event):
+        self.update_selection_rect()
         if self._editing is True:
             sel = self.selectedItems()
             if (len(sel) == 1 and isinstance(sel[0], OnCurvePointItem) and
@@ -1748,6 +1780,39 @@ class GlyphScene(QGraphicsScene):
         x, y = scenePos.x(), scenePos.y()
         self._knifeLine = self.addLine(x, y, x, y)
         event.accept()
+
+    def update_selection_rect(self):
+        if self.grip != None:
+            self.removeItem(self.grip)
+
+        self.grip = SizeGripItem(self.getViewScale(), self._selection_rect)
+
+        def getX(i):
+            if isinstance(i, OffCurvePointItem):
+                return i.parentItem().x() + i.x()
+            else:
+                return i.x()
+
+        def getY(i):
+            if isinstance(i, OffCurvePointItem):
+                return i.parentItem().y() + i.y()
+            else:
+                return i.y()
+
+        items = self.selectedItems()
+        if len(items) == 0:
+            self._selection_rect.setVisible(False)
+            return
+        else:
+            self._selection_rect.setVisible(True)
+
+        xmin = min([getX(item) for item in items])
+        xmax = max([getX(item) for item in items])
+        ymin = min([getY(item) for item in items])
+        ymax = max([getY(item) for item in items])
+        #self._selection_rect.setRect(QRectF(xmin, ymin, xmax-xmin, ymax-ymin)) 
+        self._selection_rect.setRect(QRectF(xmin, ymax, xmax-xmin, -(ymax-ymin))) #the y axis seems to be inverted
+        self.grip.updateHandleItemPositions()
 
     """
     Computes intersection between a cubic spline and a line segment.
